@@ -1,0 +1,5 @@
+.DS_Store
+
+# Local raw data and generated outputs are intentionally not tracked.
+01.Data/**
+03.Results/**

@@ -1,0 +1,683 @@
+---
+title: "DHODH analysis - AC16 and IPS"
+author: "Pauline Brochet"
+date: last-modified # More robust than Sys.Date for frozen files
+date-format: long
+
+format:
+  html:
+    theme: litera
+    css: styles.css
+    code-fold: true
+    toc: true
+    toc-expand: true
+    toc-depth: 6
+    number-sections: true
+    embed-resources: true # Makes the HTML portable (optional)
+    smooth-scroll: true
+
+execute:
+  # Stops re-rendering finished .qmd files unless the source changes
+  freeze: auto 
+  cache: true
+  # General output cleaning
+  warning: false
+  message: false
+
+editor:
+  # Crucial for Positron/VS Code interactivity
+  render-on-save: false
+  # Forces the preview to open in a pane on the right
+  viewer: side 
+---
+
+
+# Prepare working environment
+
+## Config
+
+```{r}
+#| cache: false
+source("02.Rscripts/library.R")
+load_project_libraries()
+
+theme_set(theme_minimal(base_size = 12))
+```
+
+```{r}
+#| cache: false
+
+source("02.Rscripts/config.R")
+source("02.Rscripts/transcriptomic.R")
+source("02.Rscripts/proteomic.R")
+source("02.Rscripts/metabolomic.R")
+source("02.Rscripts/enrichment.R")
+source("02.Rscripts/clustering.R")
+
+```
+
+# Transcriptomic
+
+```{r}
+#| message = FALSE
+#| warning = FALSE
+
+### This chunk lists all input files. ###
+```
+
+## AC16
+
+### DEG
+
+```{r}
+# AC16 transcriptomics pipeline
+# This caller uses the same transcriptomics functions as the iPSC workflow.
+# Project-specific comparison definitions are stored in config.R.
+
+# 1. Define output folders.
+out_dir_ac16 <- file.path(PATH.AC16_results, "01.Transcriptomic")
+deg_dir_ac16 <- file.path(out_dir_ac16, "deg")
+dir.create(deg_dir_ac16, recursive = TRUE, showWarnings = FALSE)
+
+# 2. Load AC16 sample metadata.
+meta_ac16 <- read_tsv(PATH.TRANSCRIPTOMIC_SAMPLE_METADATA) %>% 
+  filter(dataset == TRANSCRIPTOMIC_AC16_DATASET)
+
+# 3. Normalize counts and generate QC plots for AC16.
+message("Running normalization for AC16 transcriptomics.")
+normalize_and_qc(
+  counts_path = PATH.TRANSCRIPTOMIC_RAW_DATA, 
+  meta = meta_ac16, 
+  dataset = TRANSCRIPTOMIC_AC16_DATASET, 
+  out_dir = out_dir_ac16
+)
+
+# 4. Run all AC16 DEG comparisons defined in config.R.
+for (i in seq_len(nrow(TRANSCRIPTOMIC_AC16_DEG_COMPARISONS))) {
+  comparison <- TRANSCRIPTOMIC_AC16_DEG_COMPARISONS[i, ]
+
+  message("Running DEG comparison: ", comparison$tag,
+          " [", comparison$section, "]")
+
+  run_deg(
+    counts_path = PATH.TRANSCRIPTOMIC_RAW_DATA, 
+    meta = meta_ac16, 
+    dataset = TRANSCRIPTOMIC_AC16_DATASET, 
+    subset_expr = comparison$subset_expr,
+    design = comparison$design,
+    contrast = c(
+      comparison$contrast_factor,
+      comparison$contrast_case,
+      comparison$contrast_control
+    ),
+    tag = comparison$tag, 
+    out_dir = deg_dir_ac16
+  )
+}
+
+message("AC16 transcriptomics analysis complete. Results written to: ", out_dir_ac16)
+```
+
+### Enrichment analysis
+
+```{r}
+# AC16 transcriptomics enrichment
+# Run Reactome GSEA and g:Profiler enrichment for every AC16 DEG table
+# produced by the previous chunk.
+
+ac16_enrichment_analysis <- TRANSCRIPTOMIC_ENRICHMENT_ANALYSES %>%
+  filter(dataset == TRANSCRIPTOMIC_AC16_DATASET)
+
+stopifnot(nrow(ac16_enrichment_analysis) == 1)
+
+message("\nRunning transcriptomics enrichment for: ",
+        ac16_enrichment_analysis$dataset)
+
+run_enrichment_for_deg_directory(
+  deg_dir = ac16_enrichment_analysis$deg_dir,
+  out_dir = ac16_enrichment_analysis$out_dir,
+  gene_col = ac16_enrichment_analysis$gene_col,
+  fc_col = ac16_enrichment_analysis$fc_col,
+  padj_col = ac16_enrichment_analysis$padj_col,
+  lfc_cut = ac16_enrichment_analysis$lfc_cut,
+  padj_cut = ac16_enrichment_analysis$padj_cut,
+  gene_type = ac16_enrichment_analysis$gene_type
+)
+```
+
+
+### Mitocarta-specific mapping
+
+```{r}
+# AC16 transcriptomics MitoCarta plots
+# Generate MitoCarta-specific detailed tables and signed pathway barplots
+# from the AC16 transcriptomics DEG tables.
+
+ac16_mitocarta_analysis <- TRANSCRIPTOMIC_MITOCARTA_ANALYSES %>%
+  filter(dataset == TRANSCRIPTOMIC_AC16_DATASET)
+
+stopifnot(nrow(ac16_mitocarta_analysis) == 1)
+
+run_mitocarta_plots_transcriptomics(
+  deg_dir = ac16_mitocarta_analysis$deg_dir,
+  mitocarta_file = ac16_mitocarta_analysis$mitocarta_path,
+  out_dir = ac16_mitocarta_analysis$out_dir,
+  dataset = ac16_mitocarta_analysis$dataset,
+  output_prefix = ac16_mitocarta_analysis$output_prefix,
+  contrast_keep = NULL,
+  lfc_cut = ac16_mitocarta_analysis$lfc_cut,
+  padj_cut = ac16_mitocarta_analysis$padj_cut,
+  levels_keep = ac16_mitocarta_analysis$levels_keep
+)
+```
+
+### Glycolysis/mitocarta volcano plot
+
+```{r}
+# AC16 transcriptomics volcano restricted to MitoCarta and KEGG/Reactome
+# glycolysis genes. C/T is shown with filled circles and C/C with open circles.
+
+plot_mitocarta_glycolysis_volcano(
+  comparisons = TRANSCRIPTOMIC_AC16_GLYCO_MITO_VOLCANO$comparisons,
+  mitocarta_file = PATH.MITOCARTA_DB,
+  out_dir = TRANSCRIPTOMIC_AC16_GLYCO_MITO_VOLCANO$out_dir,
+  output_prefix = TRANSCRIPTOMIC_AC16_GLYCO_MITO_VOLCANO$output_prefix,
+  feature_col = TRANSCRIPTOMIC_AC16_GLYCO_MITO_VOLCANO$feature_col,
+  lfc_col = TRANSCRIPTOMIC_AC16_GLYCO_MITO_VOLCANO$lfc_col,
+  padj_col = TRANSCRIPTOMIC_AC16_GLYCO_MITO_VOLCANO$padj_col,
+  lfc_cut = TRANSCRIPTOMIC_AC16_GLYCO_MITO_VOLCANO$lfc_cut,
+  padj_cut = TRANSCRIPTOMIC_AC16_GLYCO_MITO_VOLCANO$padj_cut,
+  title = TRANSCRIPTOMIC_AC16_GLYCO_MITO_VOLCANO$title
+)
+```
+
+## IPS
+
+### DEG
+
+```{r}
+# iPSC transcriptomics pipeline
+# This caller keeps project-specific choices in config.R:
+# - input paths
+# - output paths
+# - excluded lines
+# - requested DEG comparisons
+
+# 1. Define output folders.
+out_dir_ips <- file.path(PATH.IPS_results, "01.Transcriptomic")
+deg_dir_ips <- file.path(out_dir_ips, "deg")
+dir.create(deg_dir_ips, recursive = TRUE, showWarnings = FALSE)
+
+# 2. Load iPSC sample metadata and exclude line 6132.
+meta_filtered <- read_tsv(PATH.TRANSCRIPTOMIC_SAMPLE_METADATA) %>% 
+  filter(dataset == TRANSCRIPTOMIC_IPS_DATASET) %>% 
+  filter(!line %in% TRANSCRIPTOMIC_IPS_EXCLUDED_LINES)
+
+# 3. Normalize counts and generate QC plots on the filtered iPSC subset.
+message("Running normalization for iPSC transcriptomics, excluding line(s): ",
+        paste(TRANSCRIPTOMIC_IPS_EXCLUDED_LINES, collapse = ", "))
+normalize_and_qc(
+  counts_path = PATH.TRANSCRIPTOMIC_RAW_DATA, 
+  meta = meta_filtered, 
+  dataset = TRANSCRIPTOMIC_IPS_DATASET, 
+  out_dir = out_dir_ips
+)
+
+# 4. Run all DEG comparisons defined in config.R.
+for (i in seq_len(nrow(TRANSCRIPTOMIC_IPS_DEG_COMPARISONS))) {
+  comparison <- TRANSCRIPTOMIC_IPS_DEG_COMPARISONS[i, ]
+
+  message("Running DEG comparison: ", comparison$tag,
+          " [", comparison$section, "]")
+
+  run_deg(
+    counts_path = PATH.TRANSCRIPTOMIC_RAW_DATA, 
+    meta = meta_filtered, 
+    dataset = TRANSCRIPTOMIC_IPS_DATASET, 
+    subset_expr = comparison$subset_expr,
+    design = comparison$design,
+    contrast = c(
+      comparison$contrast_factor,
+      comparison$contrast_case,
+      comparison$contrast_control
+    ),
+    tag = comparison$tag, 
+    out_dir = deg_dir_ips
+  )
+}
+
+message("iPSC transcriptomics analysis complete. Results written to: ", out_dir_ips)
+```
+
+### Enrichment analysis
+
+
+```{r}
+# iPSC transcriptomics enrichment
+# Run Reactome GSEA and g:Profiler enrichment for every iPSC DEG table
+# produced by the previous chunk.
+
+ips_enrichment_analysis <- TRANSCRIPTOMIC_ENRICHMENT_ANALYSES %>%
+  filter(dataset == TRANSCRIPTOMIC_IPS_DATASET)
+
+stopifnot(nrow(ips_enrichment_analysis) == 1)
+
+message("\nRunning transcriptomics enrichment for: ",
+        ips_enrichment_analysis$dataset)
+
+run_enrichment_for_deg_directory(
+  deg_dir = ips_enrichment_analysis$deg_dir,
+  out_dir = ips_enrichment_analysis$out_dir,
+  gene_col = ips_enrichment_analysis$gene_col,
+  fc_col = ips_enrichment_analysis$fc_col,
+  padj_col = ips_enrichment_analysis$padj_col,
+  lfc_cut = ips_enrichment_analysis$lfc_cut,
+  padj_cut = ips_enrichment_analysis$padj_cut,
+  gene_type = ips_enrichment_analysis$gene_type
+)
+```
+
+### Mitocarta-specific mapping
+
+```{r}
+# iPSC transcriptomics MitoCarta plots
+# Generate MitoCarta-specific detailed tables and signed pathway barplots
+# from the iPSC transcriptomics DEG tables.
+
+ips_mitocarta_analysis <- TRANSCRIPTOMIC_MITOCARTA_ANALYSES %>%
+  filter(dataset == TRANSCRIPTOMIC_IPS_DATASET)
+
+stopifnot(nrow(ips_mitocarta_analysis) == 1)
+
+run_mitocarta_plots_transcriptomics(
+  deg_dir = ips_mitocarta_analysis$deg_dir,
+  mitocarta_file = ips_mitocarta_analysis$mitocarta_path,
+  out_dir = ips_mitocarta_analysis$out_dir,
+  dataset = ips_mitocarta_analysis$dataset,
+  output_prefix = ips_mitocarta_analysis$output_prefix,
+  contrast_keep = NULL,
+  lfc_cut = ips_mitocarta_analysis$lfc_cut,
+  padj_cut = ips_mitocarta_analysis$padj_cut,
+  levels_keep = ips_mitocarta_analysis$levels_keep
+)
+```
+
+### Glycolysis/mitocarta volcano plot
+
+```{r}
+# iPSC transcriptomics volcano restricted to MitoCarta and KEGG/Reactome
+# glycolysis genes. C/T is shown with filled circles and C/C with open circles.
+
+plot_mitocarta_glycolysis_volcano(
+  comparisons = TRANSCRIPTOMIC_IPS_GLYCO_MITO_VOLCANO$comparisons,
+  mitocarta_file = PATH.MITOCARTA_DB,
+  out_dir = TRANSCRIPTOMIC_IPS_GLYCO_MITO_VOLCANO$out_dir,
+  output_prefix = TRANSCRIPTOMIC_IPS_GLYCO_MITO_VOLCANO$output_prefix,
+  feature_col = TRANSCRIPTOMIC_IPS_GLYCO_MITO_VOLCANO$feature_col,
+  lfc_col = TRANSCRIPTOMIC_IPS_GLYCO_MITO_VOLCANO$lfc_col,
+  padj_col = TRANSCRIPTOMIC_IPS_GLYCO_MITO_VOLCANO$padj_col,
+  lfc_cut = TRANSCRIPTOMIC_IPS_GLYCO_MITO_VOLCANO$lfc_cut,
+  padj_cut = TRANSCRIPTOMIC_IPS_GLYCO_MITO_VOLCANO$padj_cut,
+  title = TRANSCRIPTOMIC_IPS_GLYCO_MITO_VOLCANO$title
+)
+```
+
+
+
+# Proteomic
+
+## AC16
+
+### DEP
+
+```{r}
+# AC16 proteomics DEP generation
+# This reproduces the historical single-batch AC16 DEP workflow:
+# raw report -> filtering -> scale normalization -> BPCA imputation -> limma.
+
+run_ac16_proteomics_dep(
+  report_file = PROTEOMIC_AC16_ANALYSIS$report_file,
+  out_dir = PROTEOMIC_AC16_ANALYSIS$out_dir,
+  sample_groups = PROTEOMIC_AC16_ANALYSIS$sample_groups,
+  contrast_defs = PROTEOMIC_AC16_ANALYSIS$contrast_defs,
+  normalized_matrix_file = PROTEOMIC_AC16_ANALYSIS$normalized_matrix_file,
+  min_rep_per_group = PROTEOMIC_AC16_ANALYSIS$min_rep_per_group,
+  min_groups_required = PROTEOMIC_AC16_ANALYSIS$min_groups_required,
+  nPcs_impute = PROTEOMIC_AC16_ANALYSIS$nPcs_impute,
+  lfc_cut = PROTEOMIC_AC16_ANALYSIS$lfc_cut,
+  padj_cut = PROTEOMIC_AC16_ANALYSIS$padj_cut
+)
+```
+
+
+### QC and volcano plots
+
+```{r}
+# AC16 proteomics QC and volcano plots
+# QC plots use the normalized no-50.50 matrix produced by the DEP chunk.
+
+ac16_proteomics_meta <- build_ac16_proteomics_metadata(
+  PROTEOMIC_AC16_ANALYSIS$sample_groups
+)
+
+run_proteomics_matrix_qc_plots(
+  matrix_file = PROTEOMIC_AC16_PLOT_ANALYSIS$matrix_file,
+  metadata = ac16_proteomics_meta,
+  sample_col = "sample",
+  color_col = "clone",
+  shape_col = "condition",
+  label_col = "sample",
+  out_dir = PROTEOMIC_AC16_PLOT_ANALYSIS$qc_out_dir,
+  dataset_label = PROTEOMIC_AC16_PLOT_ANALYSIS$dataset_label,
+  annotation_cols = c("clone", "condition")
+)
+
+run_proteomics_volcano_plots(
+  dep_dir = PROTEOMIC_AC16_PLOT_ANALYSIS$dep_dir,
+  out_dir = PROTEOMIC_AC16_PLOT_ANALYSIS$volcano_out_dir,
+  file_pattern = PROTEOMIC_AC16_PLOT_ANALYSIS$file_pattern,
+  lfc_cut = PROTEOMIC_AC16_PLOT_ANALYSIS$lfc_cut,
+  padj_cut = PROTEOMIC_AC16_PLOT_ANALYSIS$padj_cut
+)
+```
+
+### Glycolysis/mitocarta volcano plot
+
+```{r}
+# AC16 proteomics volcano restricted to MitoCarta and KEGG/Reactome glycolysis
+# proteins. C/T is shown with filled circles and C/C with open circles.
+
+plot_mitocarta_glycolysis_volcano(
+  comparisons = PROTEOMIC_AC16_GLYCO_MITO_VOLCANO$comparisons,
+  mitocarta_file = PATH.MITOCARTA_DB,
+  out_dir = PROTEOMIC_AC16_GLYCO_MITO_VOLCANO$out_dir,
+  output_prefix = PROTEOMIC_AC16_GLYCO_MITO_VOLCANO$output_prefix,
+  feature_col = PROTEOMIC_AC16_GLYCO_MITO_VOLCANO$feature_col,
+  lfc_col = PROTEOMIC_AC16_GLYCO_MITO_VOLCANO$lfc_col,
+  padj_col = PROTEOMIC_AC16_GLYCO_MITO_VOLCANO$padj_col,
+  lfc_cut = PROTEOMIC_AC16_GLYCO_MITO_VOLCANO$lfc_cut,
+  padj_cut = PROTEOMIC_AC16_GLYCO_MITO_VOLCANO$padj_cut,
+  title = PROTEOMIC_AC16_GLYCO_MITO_VOLCANO$title
+)
+```
+
+
+### Enrichment analysis
+
+```{r}
+# AC16 proteomics enrichment
+# Reuse the generic enrichment functions with limma column names.
+
+ac16_proteomics_enrichment <- PROTEOMIC_ENRICHMENT_ANALYSES %>%
+  filter(dataset == "AC16")
+
+stopifnot(nrow(ac16_proteomics_enrichment) == 1)
+
+run_enrichment_for_deg_directory(
+  deg_dir = ac16_proteomics_enrichment$dep_dir,
+  out_dir = ac16_proteomics_enrichment$out_dir,
+  gene_col = ac16_proteomics_enrichment$gene_col,
+  fc_col = ac16_proteomics_enrichment$fc_col,
+  padj_col = ac16_proteomics_enrichment$padj_col,
+  lfc_cut = ac16_proteomics_enrichment$lfc_cut,
+  padj_cut = ac16_proteomics_enrichment$padj_cut,
+  gene_type = ac16_proteomics_enrichment$gene_type,
+  file_pattern = ac16_proteomics_enrichment$file_pattern
+)
+```
+
+
+## IPS
+
+### DEP
+
+```{r}
+# iPSC proteomics preprocessing
+# This creates the merged scale-normalized non-imputed matrix used for DEP.
+# BPCA-imputed and batch-corrected matrices are written only as QC continuity
+# outputs and are not used for the limma inference step below.
+
+run_ips_proteomics_preprocessing(
+  report240_file = PROTEOMIC_IPS_PREPROCESSING$report240_file,
+  report480_file = PROTEOMIC_IPS_PREPROCESSING$report480_file,
+  out_base = PROTEOMIC_IPS_PREPROCESSING$out_base,
+  trim_tail_240 = PROTEOMIC_IPS_PREPROCESSING$trim_tail_240,
+  trim_tail_480 = PROTEOMIC_IPS_PREPROCESSING$trim_tail_480,
+  min_n_per_group = PROTEOMIC_IPS_PREPROCESSING$min_n_per_group,
+  nPcs_impute = PROTEOMIC_IPS_PREPROCESSING$nPcs_impute,
+  exclude_lines = PROTEOMIC_IPS_PREPROCESSING$exclude_lines
+)
+
+# iPSC proteomics DEP generation
+# The model uses the normalized non-imputed matrix and includes Batch as a
+# covariate, matching the cleaned iPSC inference strategy.
+
+run_ips_proteomics_dep(
+  matrix_file = PROTEOMIC_IPS_ANALYSIS$matrix_file,
+  metadata_file = PROTEOMIC_IPS_ANALYSIS$metadata_file,
+  report_files = PROTEOMIC_IPS_ANALYSIS$report_files,
+  out_dir = PROTEOMIC_IPS_ANALYSIS$out_dir,
+  condition_levels = PROTEOMIC_IPS_ANALYSIS$condition_levels,
+  contrast_defs = PROTEOMIC_IPS_ANALYSIS$contrast_defs,
+  exclude_lines = PROTEOMIC_IPS_ANALYSIS$exclude_lines,
+  lfc_cut = PROTEOMIC_IPS_ANALYSIS$lfc_cut,
+  padj_cut = PROTEOMIC_IPS_ANALYSIS$padj_cut
+)
+```
+
+### QC and volcano plots
+
+```{r}
+# iPSC proteomics QC and volcano plots
+# QC plots use the normalized non-imputed matrix; missing values are median
+# imputed inside the plotting wrapper for PCA and distance heatmaps only.
+
+ips_proteomics_meta <- read_ips_proteomics_metadata(
+  metadata_file = PROTEOMIC_IPS_PLOT_ANALYSIS$metadata_file,
+  exclude_lines = PROTEOMIC_IPS_PLOT_ANALYSIS$exclude_lines
+)
+
+run_proteomics_matrix_qc_plots(
+  matrix_file = PROTEOMIC_IPS_PLOT_ANALYSIS$matrix_file,
+  metadata = ips_proteomics_meta,
+  sample_col = "sample_uid",
+  color_col = "Phenotype",
+  shape_col = "Batch",
+  label_col = "Sample_ID",
+  out_dir = PROTEOMIC_IPS_PLOT_ANALYSIS$qc_out_dir,
+  dataset_label = PROTEOMIC_IPS_PLOT_ANALYSIS$dataset_label,
+  annotation_cols = c("Batch", "Phenotype")
+)
+
+run_proteomics_volcano_plots(
+  dep_dir = PROTEOMIC_IPS_PLOT_ANALYSIS$dep_dir,
+  out_dir = PROTEOMIC_IPS_PLOT_ANALYSIS$volcano_out_dir,
+  file_pattern = PROTEOMIC_IPS_PLOT_ANALYSIS$file_pattern,
+  lfc_cut = PROTEOMIC_IPS_PLOT_ANALYSIS$lfc_cut,
+  padj_cut = PROTEOMIC_IPS_PLOT_ANALYSIS$padj_cut
+)
+```
+
+### Glycolysis/mitocarta volcano plot
+
+```{r}
+# iPSC proteomics volcano restricted to MitoCarta and KEGG/Reactome glycolysis
+# proteins. C/T is shown with filled circles and C/C with open circles.
+
+plot_mitocarta_glycolysis_volcano(
+  comparisons = PROTEOMIC_IPS_GLYCO_MITO_VOLCANO$comparisons,
+  mitocarta_file = PATH.MITOCARTA_DB,
+  out_dir = PROTEOMIC_IPS_GLYCO_MITO_VOLCANO$out_dir,
+  output_prefix = PROTEOMIC_IPS_GLYCO_MITO_VOLCANO$output_prefix,
+  feature_col = PROTEOMIC_IPS_GLYCO_MITO_VOLCANO$feature_col,
+  lfc_col = PROTEOMIC_IPS_GLYCO_MITO_VOLCANO$lfc_col,
+  padj_col = PROTEOMIC_IPS_GLYCO_MITO_VOLCANO$padj_col,
+  lfc_cut = PROTEOMIC_IPS_GLYCO_MITO_VOLCANO$lfc_cut,
+  padj_cut = PROTEOMIC_IPS_GLYCO_MITO_VOLCANO$padj_cut,
+  title = PROTEOMIC_IPS_GLYCO_MITO_VOLCANO$title
+)
+```
+
+### Enrichment analysis
+
+```{r}
+# iPSC proteomics enrichment
+# Reuse the generic enrichment functions with limma column names.
+
+ips_proteomics_enrichment <- PROTEOMIC_ENRICHMENT_ANALYSES %>%
+  filter(dataset == "IPS")
+
+stopifnot(nrow(ips_proteomics_enrichment) == 1)
+
+run_enrichment_for_deg_directory(
+  deg_dir = ips_proteomics_enrichment$dep_dir,
+  out_dir = ips_proteomics_enrichment$out_dir,
+  gene_col = ips_proteomics_enrichment$gene_col,
+  fc_col = ips_proteomics_enrichment$fc_col,
+  padj_col = ips_proteomics_enrichment$padj_col,
+  lfc_cut = ips_proteomics_enrichment$lfc_cut,
+  padj_cut = ips_proteomics_enrichment$padj_cut,
+  gene_type = ips_proteomics_enrichment$gene_type,
+  file_pattern = ips_proteomics_enrichment$file_pattern
+)
+```
+
+
+# Metabolomic
+
+## AC16
+
+```{r}
+# AC16 metabolomics DEM generation and QC plots
+# The function keeps the historical cell-type-specific normalization.
+
+res_metabo_ac16 <- run_metabolomics_dem_by_celltype(
+  celltype = METABOLOMIC_AC16_ANALYSIS$celltype,
+  raw_data_file = METABOLOMIC_AC16_ANALYSIS$raw_data_file,
+  out_dir = METABOLOMIC_AC16_ANALYSIS$out_dir,
+  target_clones = METABOLOMIC_AC16_ANALYSIS$target_clones,
+  outliers = METABOLOMIC_AC16_ANALYSIS$outliers,
+  qual_cut = METABOLOMIC_AC16_ANALYSIS$qual_cut,
+  lfc_cut = METABOLOMIC_AC16_ANALYSIS$lfc_cut,
+  padj_cut = METABOLOMIC_AC16_ANALYSIS$padj_cut,
+  make_qc = TRUE,
+  make_volcano = TRUE
+)
+```
+
+
+
+## IPS
+
+```{r}
+# iPSC metabolomics DEM generation and QC plots
+# The retained clones and outlier samples are configured in config.R.
+
+res_metabo_ips <- run_metabolomics_dem_by_celltype(
+  celltype = METABOLOMIC_IPS_ANALYSIS$celltype,
+  raw_data_file = METABOLOMIC_IPS_ANALYSIS$raw_data_file,
+  out_dir = METABOLOMIC_IPS_ANALYSIS$out_dir,
+  target_clones = METABOLOMIC_IPS_ANALYSIS$target_clones,
+  outliers = METABOLOMIC_IPS_ANALYSIS$outliers,
+  qual_cut = METABOLOMIC_IPS_ANALYSIS$qual_cut,
+  lfc_cut = METABOLOMIC_IPS_ANALYSIS$lfc_cut,
+  padj_cut = METABOLOMIC_IPS_ANALYSIS$padj_cut,
+  make_qc = TRUE,
+  make_volcano = TRUE
+)
+```
+
+
+
+
+
+# Clustering C/C and C/T
+
+## AC16
+
+### Clustering heatmap
+
+```{r}
+# AC16 multi-omics C/T vs C/C stimulation clustering
+# This writes the cluster assignment table plus high-resolution heatmap and
+# separate shared legends.
+
+ac16_ct_cc_cluster <- run_multiomics_ct_cc_clustering(
+  analysis = MULTIOMICS_CLUSTERING_AC16,
+  plot_settings = CLUSTERING_PLOT_SETTINGS,
+  make_heatmap = TRUE,
+  make_composition = FALSE,
+  run_ora = FALSE
+)
+```
+
+### Omic composition
+
+```{r}
+# Omic composition per C/T vs C/C response cluster.
+
+plot_multiomics_cluster_composition(
+  annot_tbl = ac16_ct_cc_cluster$table,
+  out_dir = MULTIOMICS_CLUSTERING_AC16$out_dir,
+  output_prefix = MULTIOMICS_CLUSTERING_AC16$output_prefix,
+  plot_settings = CLUSTERING_PLOT_SETTINGS,
+  dpi = MULTIOMICS_CLUSTERING_AC16$dpi
+)
+```
+
+### Reactome ORA
+
+```{r}
+# Reactome over-representation analysis by cluster.
+# The ORA uses transcriptomic and proteomic gene symbols only.
+
+ac16_ct_cc_ora <- run_multiomics_cluster_reactome(
+  annot_tbl = ac16_ct_cc_cluster$table,
+  out_dir = MULTIOMICS_CLUSTERING_AC16$out_dir,
+  output_prefix = MULTIOMICS_CLUSTERING_AC16$output_prefix
+)
+```
+
+## IPS
+
+### Clustering heatmap
+
+```{r}
+# iPSC-CM multi-omics C/T vs C/C stimulation clustering
+# This uses the same colors, cluster definitions, and omic scale limits as AC16.
+
+ips_ct_cc_cluster <- run_multiomics_ct_cc_clustering(
+  analysis = MULTIOMICS_CLUSTERING_IPS,
+  plot_settings = CLUSTERING_PLOT_SETTINGS,
+  make_heatmap = TRUE,
+  make_composition = FALSE,
+  run_ora = FALSE
+)
+```
+
+### Omic composition
+
+```{r}
+# Omic composition per C/T vs C/C response cluster.
+
+plot_multiomics_cluster_composition(
+  annot_tbl = ips_ct_cc_cluster$table,
+  out_dir = MULTIOMICS_CLUSTERING_IPS$out_dir,
+  output_prefix = MULTIOMICS_CLUSTERING_IPS$output_prefix,
+  plot_settings = CLUSTERING_PLOT_SETTINGS,
+  dpi = MULTIOMICS_CLUSTERING_IPS$dpi
+)
+```
+
+### Reactome ORA
+
+```{r}
+# Reactome over-representation analysis by cluster.
+# The ORA uses transcriptomic and proteomic gene symbols only.
+
+ips_ct_cc_ora <- run_multiomics_cluster_reactome(
+  annot_tbl = ips_ct_cc_cluster$table,
+  out_dir = MULTIOMICS_CLUSTERING_IPS$out_dir,
+  output_prefix = MULTIOMICS_CLUSTERING_IPS$output_prefix
+)
+```
