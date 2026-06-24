@@ -288,7 +288,7 @@ plot_volcano_qc <- function(tbl,
 # ------------------------------------------------------------
 # MitoCarta/glycolysis volcano plot
 # ------------------------------------------------------------
-# Build a volcano plot restricted to MitoCarta genes and glycolysis genes.
+# Build volcano plots restricted to MitoCarta genes and glycolysis genes.
 # The selected feature set is the union of:
 # - MitoCarta symbols from the project MitoCarta file,
 # - KEGG/Reactome glycolysis-related gene sets from msigdbr.
@@ -403,7 +403,7 @@ plot_mitocarta_glycolysis_volcano <- function(
     label_significant = TRUE,
     shade_significant_regions = TRUE,
     write_tables = TRUE,
-    width = 6,
+    width = 9,
     height = 5,
     dpi = 300) {
   required_cols <- c("file", "label", "shape_group")
@@ -478,11 +478,20 @@ plot_mitocarta_glycolysis_volcano <- function(
   }
 
   shape_values <- c("CT" = 16, "CC" = 1)
+  shape_labels <- c("CT" = "C/T", "CC" = "C/C")
   missing_shapes <- setdiff(unique(plot_tbl$ShapeGroup), names(shape_values))
   if (length(missing_shapes) > 0) {
     stop("Unsupported shape_group values: ", paste(missing_shapes, collapse = ", "),
          ". Use CT or CC.")
   }
+
+  plot_tbl <- plot_tbl |>
+    dplyr::mutate(
+      Panel = factor(
+        unname(shape_labels[.data$ShapeGroup]),
+        levels = unname(shape_labels)
+      )
+    )
 
   p <- ggplot2::ggplot(
     plot_tbl,
@@ -509,10 +518,9 @@ plot_mitocarta_glycolysis_volcano <- function(
     ggplot2::geom_vline(xintercept = c(-lfc_cut, lfc_cut), linetype = "dashed", linewidth = 0.35) +
     ggplot2::geom_hline(yintercept = -log10(padj_cut), linetype = "dashed", linewidth = 0.35) +
     ggplot2::geom_point(
-      ggplot2::aes(color = .data$Direction, shape = .data$ShapeGroup),
+      ggplot2::aes(color = .data$Direction),
       size = 2.5,
-      alpha = 0.9,
-      stroke = 0.9
+      alpha = 0.9
     ) +
     ggrepel::geom_text_repel(
       ggplot2::aes(label = .data$Label),
@@ -521,29 +529,24 @@ plot_mitocarta_glycolysis_volcano <- function(
       min.segment.length = 0,
       na.rm = TRUE
     ) +
+    ggplot2::facet_wrap(ggplot2::vars(.data$Panel), nrow = 1) +
     ggplot2::scale_color_manual(
       values = c("Up" = "#d73027", "Down" = "#2166ac", "Not significant" = "grey70"),
       breaks = c("Up", "Down", "Not significant"),
       name = NULL
     ) +
-    ggplot2::scale_shape_manual(
-      values = shape_values,
-      breaks = c("CT", "CC"),
-      labels = c("C/T", "C/C"),
-      name = NULL
-    ) +
     ggplot2::labs(
       title = title,
-      subtitle = subtitle,
       x = "log2 fold-change",
       y = "-log10(adjusted p-value)"
     ) +
     ggplot2::theme_bw(base_size = 12) +
     ggplot2::theme(
       plot.title = ggplot2::element_text(face = "bold", hjust = 0.5),
-      plot.subtitle = ggplot2::element_text(hjust = 0.5),
       legend.position = "top",
-      legend.box = "horizontal"
+      legend.box = "horizontal",
+      strip.background = ggplot2::element_rect(fill = "grey92", color = "grey60"),
+      strip.text = ggplot2::element_text(face = "bold")
     )
 
   png_file <- file.path(out_dir, paste0(output_prefix, ".png"))

@@ -175,7 +175,7 @@ run_mitocarta_plots_transcriptomics(
 
 ```{r}
 # AC16 transcriptomics volcano restricted to MitoCarta and KEGG/Reactome
-# glycolysis genes. C/T is shown with filled circles and C/C with open circles.
+# glycolysis genes, with C/T and C/C shown as side-by-side panels.
 
 plot_mitocarta_glycolysis_volcano(
   comparisons = TRANSCRIPTOMIC_AC16_GLYCO_MITO_VOLCANO$comparisons,
@@ -306,7 +306,7 @@ run_mitocarta_plots_transcriptomics(
 
 ```{r}
 # iPSC transcriptomics volcano restricted to MitoCarta and KEGG/Reactome
-# glycolysis genes. C/T is shown with filled circles and C/C with open circles.
+# glycolysis genes, with C/T and C/C shown as side-by-side panels.
 
 plot_mitocarta_glycolysis_volcano(
   comparisons = TRANSCRIPTOMIC_IPS_GLYCO_MITO_VOLCANO$comparisons,
@@ -385,7 +385,7 @@ run_proteomics_volcano_plots(
 
 ```{r}
 # AC16 proteomics volcano restricted to MitoCarta and KEGG/Reactome glycolysis
-# proteins. C/T is shown with filled circles and C/C with open circles.
+# proteins, with C/T and C/C shown as side-by-side panels.
 
 plot_mitocarta_glycolysis_volcano(
   comparisons = PROTEOMIC_AC16_GLYCO_MITO_VOLCANO$comparisons,
@@ -502,7 +502,7 @@ run_proteomics_volcano_plots(
 
 ```{r}
 # iPSC proteomics volcano restricted to MitoCarta and KEGG/Reactome glycolysis
-# proteins. C/T is shown with filled circles and C/C with open circles.
+# proteins, with C/T and C/C shown as side-by-side panels.
 
 plot_mitocarta_glycolysis_volcano(
   comparisons = PROTEOMIC_IPS_GLYCO_MITO_VOLCANO$comparisons,

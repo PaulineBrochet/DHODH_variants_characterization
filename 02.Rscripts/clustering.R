@@ -205,7 +205,8 @@ build_multiomics_cluster_heatmap <- function(annot_tbl,
     if (nrow(sub_df) == 0) next
 
     mat_raw <- as.matrix(sub_df[, c("logFC_CT", "logFC_CC")])
-    colnames(mat_raw) <- analysis$column_labels
+    display_column_labels <- gsub("\\s*\\n\\s*", " ", analysis$column_labels)
+    colnames(mat_raw) <- display_column_labels
 
     threshold <- plot_settings$thresholds[[omic_name]]
     scale_max <- plot_settings$scale_max[[omic_name]]
@@ -231,7 +232,7 @@ build_multiomics_cluster_heatmap <- function(annot_tbl,
       mat_scaled,
       name = paste0(omic_name, " log2FC"),
       col = col_fun,
-      column_labels = analysis$column_labels,
+      column_labels = display_column_labels,
       row_split = sub_df$Cluster,
       row_title = NULL,
       row_title_rot = 0,
@@ -241,7 +242,9 @@ build_multiomics_cluster_heatmap <- function(annot_tbl,
       cluster_columns = FALSE,
       show_row_names = FALSE,
       show_heatmap_legend = show_heatmap_legend,
-      column_title = paste0(omic_name, " (n=", nrow(sub_df), ")"),
+      column_names_rot = 0,
+      column_names_centered = TRUE,
+      column_names_gp = grid::gpar(fontsize = 12),
       border = TRUE,
       height = grid::unit(min(plot_settings$max_panel_height_cm,
                               nrow(sub_df) * plot_settings$row_height_cm + 2), "cm"),
@@ -328,7 +331,7 @@ save_multiomics_heatmap_outputs <- function(ht_list,
                                             out_dir,
                                             output_prefix,
                                             heatmap_width = 8,
-                                            heatmap_height = 14,
+                                            heatmap_height = 16,
                                             legend_width = 9,
                                             legend_height = 4,
                                             dpi = 600) {

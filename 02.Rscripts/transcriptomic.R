@@ -264,6 +264,229 @@ pick_top_labels <- function(tbl_plot, n = 10, y_col = c("padj","pvalue"),
 
 
 # ------------------------------------------------------------
+# SoM module score plotting
+# ------------------------------------------------------------
+
+plot_old_som_plot <- function(qc_dataset,
+                              som_modules,
+                              exercise_group,
+                              reference_group = "Controls",
+                              sex = "all",
+                              baseline_timepoint = "pre_exercise",
+                              sample_id_col = "vialLabel",
+                              timepoint_labels,
+                              group_colors,
+                              output_dir = NULL,
+                              file_prefix = "old_som_module_delta",
+                              width = 6,
+                              height = 4.5,
+                              dpi = 600,
+                              alpha = 0.05) {
+  if (length(exercise_group) != 1) {
+    out <- lapply(exercise_group, function(group_i) {
+      plot_old_som_plot(
+        qc_dataset = qc_dataset,
+        som_modules = som_modules,
+        exercise_group = group_i,
+        reference_group = reference_group,
+        sex = sex,
+        baseline_timepoint = baseline_timepoint,
+        sample_id_col = sample_id_col,
+        timepoint_labels = timepoint_labels,
+        group_colors = group_colors,
+        output_dir = output_dir,
+        file_prefix = file_prefix,
+        width = width,
+        height = height,
+        dpi = dpi,
+        alpha = alpha
+      )
+    })
+    names(out) <- exercise_group
+    return(out)
+  }
+
+  mat <- qc_dataset$tables$normalized_expression
+  feat <- qc_dataset$tables$feature_annotation
+  meta <- qc_dataset$tables$metadata
+
+  required_meta_cols <- c(sample_id_col, "pid", "Timepoint", "Sex")
+  missing_meta_cols <- setdiff(required_meta_cols, colnames(meta))
+  if (length(missing_meta_cols) > 0) {
+    stop("Missing metadata column(s): ", paste(missing_meta_cols, collapse = ", "), call. = FALSE)
+  }
+  if (!any(c("Group", "randomGroupCode") %in% colnames(meta))) {
+    stop("Metadata must contain `Group` or `randomGroupCode`.", call. = FALSE)
+  }
+  if (!all(c("feature_id", "SYMBOL") %in% colnames(feat))) {
+    stop("Feature annotation must contain `feature_id` and `SYMBOL`.", call. = FALSE)
+  }
+
+  normalize_group <- function(x) {
+    dplyr::case_when(
+      x %in% c("ADUControl", "Control", "Controls", "Resting") ~ "Control",
+      x %in% c("ADUEndur", "Endurance") ~ "Endurance",
+      x %in% c("ADUResist", "Resistance") ~ "Resistance",
+      TRUE ~ x
+    )
+  }
+
+  exercise_group <- normalize_group(exercise_group)
+  reference_group <- normalize_group(reference_group)
+  if (!reference_group %in% "Control") {
+    stop("The legacy plot expects the reference group to be Control/Controls/Resting.", call. = FALSE)
+  }
+
+  get_color <- function(possible_names) {
+    hit <- possible_names[possible_names %in% names(group_colors)][1]
+    if (is.na(hit)) {
+      stop("Missing color for one of: ", paste(possible_names, collapse = ", "), call. = FALSE)
+    }
+    unname(group_colors[[hit]])
+  }
+
+  colors <- c(
+    Resting = get_color(c("Resting", "Control", "Controls", "ADUControl")),
+    stats::setNames(get_color(c(exercise_group)), exercise_group)
+  )
+
+  feat2 <- feat |>
+    dplyr::filter(!is.na(.data$SYMBOL), .data$feature_id %in% rownames(mat)) |>
+    dplyr::mutate(mean_expr = rowMeans(mat[.data$feature_id, , drop = FALSE])) |>
+    dplyr::arrange(.data$SYMBOL, dplyr::desc(.data$mean_expr)) |>
+    dplyr::distinct(.data$SYMBOL, .keep_all = TRUE)
+
+  sym2fid <- stats::setNames(feat2$feature_id, feat2$SYMBOL)
+
+  module_df <- lapply(names(som_modules), function(module_name) {
+    fids <- unname(sym2fid[som_modules[[module_name]]])
+    fids <- fids[!is.na(fids) & fids %in% rownames(mat)]
+    if (length(fids) == 0) {
+      warning("No matched genes for module: ", module_name, call. = FALSE)
+      return(NULL)
+    }
+
+    tibble::tibble(
+      vialLabel = as.character(colnames(mat)),
+      module = module_name,
+      score = exp(colMeans(mat[fids, , drop = FALSE]))
+    )
+  }) |>
+    dplyr::bind_rows()
+
+  raw_group <- if ("Group" %in% colnames(meta)) {
+    as.character(meta$Group)
+  } else {
+    as.character(meta$randomGroupCode)
+  }
+  if ("randomGroupCode" %in% colnames(meta)) {
+    raw_group <- dplyr::coalesce(as.character(meta$randomGroupCode), raw_group)
+  }
+
+  meta_clean <- meta |>
+    dplyr::mutate(
+      vialLabel = as.character(.data[[sample_id_col]]),
+      pid = as.character(.data$pid),
+      Sex = as.character(.data$Sex),
+      Timepoint = as.character(.data$Timepoint),
+      Group = normalize_group(raw_group)
+    ) |>
+    dplyr::select("vialLabel", "pid", "Sex", "Timepoint", "Group")
+
+  if (!identical(sex, "all")) {
+    meta_clean <- meta_clean |> dplyr::filter(.data$Sex %in% sex)
+  }
+
+  dm_delta <- module_df |>
+    dplyr::left_join(meta_clean, by = "vialLabel") |>
+    dplyr::filter(!is.na(.data$Timepoint), .data$Group %in% c("Control", exercise_group)) |>
+    dplyr::mutate(y = log(.data$score)) |>
+    dplyr::group_by(.data$pid, .data$Group, .data$module) |>
+    dplyr::mutate(
+      base_y = .data$y[.data$Timepoint == baseline_timepoint][1],
+      delta = .data$y - .data$base_y
+    ) |>
+    dplyr::ungroup() |>
+    dplyr::filter(!is.na(.data$delta)) |>
+    dplyr::mutate(
+      Group = dplyr::if_else(.data$Group == "Control", "Resting", .data$Group),
+      Timepoint = factor(.data$Timepoint, levels = names(timepoint_labels))
+    )
+
+  sig <- dm_delta |>
+    dplyr::filter(.data$Group %in% c("Resting", exercise_group), .data$Timepoint != baseline_timepoint) |>
+    dplyr::group_by(.data$module, .data$Timepoint) |>
+    dplyr::summarise(
+      p = tryCatch(stats::t.test(delta ~ Group)$p.value, error = function(e) NA_real_),
+      .groups = "drop"
+    ) |>
+    dplyr::mutate(
+      p_adj = stats::p.adjust(.data$p, method = "BH"),
+      is_sig = !is.na(.data$p_adj) & .data$p_adj < alpha
+    )
+
+  sum_df <- dm_delta |>
+    dplyr::filter(.data$Group %in% c("Resting", exercise_group)) |>
+    dplyr::group_by(.data$module, .data$Timepoint, .data$Group) |>
+    dplyr::summarise(
+      mean_delta = mean(.data$delta),
+      se = stats::sd(.data$delta) / sqrt(dplyr::n()),
+      .groups = "drop"
+    ) |>
+    dplyr::left_join(sig, by = c("module", "Timepoint")) |>
+    dplyr::mutate(is_sig = ifelse(.data$Group == exercise_group, dplyr::coalesce(.data$is_sig, FALSE), FALSE))
+
+  p <- ggplot2::ggplot(sum_df, ggplot2::aes(.data$Timepoint, .data$mean_delta, group = .data$Group, color = .data$Group)) +
+    ggplot2::geom_line(linewidth = 1.1) +
+    ggplot2::geom_errorbar(
+      ggplot2::aes(ymin = .data$mean_delta - .data$se, ymax = .data$mean_delta + .data$se),
+      width = 0.15
+    ) +
+    ggplot2::geom_point(
+      ggplot2::aes(fill = ifelse(.data$is_sig, as.character(.data$Group), "white"), size = .data$is_sig),
+      shape = 21,
+      stroke = 1
+    ) +
+    ggplot2::scale_x_discrete(labels = timepoint_labels) +
+    ggplot2::scale_color_manual(values = colors) +
+    ggplot2::scale_fill_manual(values = c(colors, "white" = "white"), guide = "none") +
+    ggplot2::scale_size_manual(values = c("FALSE" = 2, "TRUE" = 3.5), guide = "none") +
+    ggplot2::facet_wrap(~module, ncol = 2, scales = "free_y") +
+    ggplot2::theme_classic() +
+    ggplot2::theme(
+      axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, size = 11),
+      axis.text.y = ggplot2::element_text(size = 12),
+      axis.title = ggplot2::element_text(size = 14, face = "bold"),
+      strip.text = ggplot2::element_text(size = 12, face = "bold"),
+      plot.title = ggplot2::element_text(size = 12, hjust = 0.5)
+    ) +
+    ggplot2::labs(
+      y = expression(Delta * " log(module score)"),
+      title = paste0("\u0394 Module Scores: ", exercise_group, " vs Resting"),
+      x = NULL
+    )
+
+  plot_file <- NULL
+  if (!is.null(output_dir)) {
+    dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+    sex_label <- if (identical(sex, "all")) "all_samples" else paste(sex, collapse = "_")
+    file_stem <- paste(file_prefix, exercise_group, "vs_Resting", sex_label, sep = "__")
+    file_stem <- gsub("[^A-Za-z0-9_\\-]+", "_", file_stem)
+    plot_file <- file.path(output_dir, paste0(file_stem, ".png"))
+    ggplot2::ggsave(plot_file, p, width = width, height = height, dpi = dpi)
+  }
+
+  list(
+    delta = dm_delta,
+    summary = sum_df,
+    tests = sig,
+    plot = p,
+    plot_file = plot_file
+  )
+}
+
+
+# ------------------------------------------------------------
 # Differential expression analysis
 # ------------------------------------------------------------
 
