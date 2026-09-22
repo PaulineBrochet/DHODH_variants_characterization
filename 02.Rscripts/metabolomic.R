@@ -231,18 +231,69 @@ run_metabolomics_volcano_plots <- function(de_dir,
 # DEM analysis
 # ------------------------------------------------------------
 
+format_metabolomics_contrast_label <- function(x) {
+  gsub("\\.", "_", x)
+}
+
+orient_metabolomics_clone_pair <- function(pair) {
+  preferred_orders <- list(
+    c("1.27", "1184"),
+    c("6135", "6135-H1"),
+    c("6137", "6135-H1"),
+    c("6135", "6137")
+  )
+
+  for (preferred in preferred_orders) {
+    if (setequal(pair, preferred)) {
+      return(list(case = preferred[1], control = preferred[2]))
+    }
+  }
+
+  list(case = pair[2], control = pair[1])
+}
+
 build_metabolomics_contrasts <- function(metadata, design) {
   clones <- unique(metadata$Clone)
   stims <- unique(metadata$Stimulation)
   contrast_list <- list()
+  contrast_info <- list()
+
+  add_contrast <- function(name,
+                           expression,
+                           case,
+                           control,
+                           comparison_type,
+                           stimulation_context = NA_character_) {
+    contrast_list[[name]] <<- expression
+    contrast_info[[name]] <<- data.frame(
+      contrast = name,
+      comparison_type = comparison_type,
+      stimulation_context = stimulation_context,
+      comparison_case = case,
+      comparison_control = control,
+      positive_logFC_higher_in = case,
+      negative_logFC_higher_in = control,
+      stringsAsFactors = FALSE
+    )
+  }
 
   for (clone_id in clones) {
     stim_group <- make.names(paste0(clone_id, "_Stimulated"))
     ns_group <- make.names(paste0(clone_id, "_Non_stimulated"))
 
     if (all(c(stim_group, ns_group) %in% colnames(design))) {
-      contrast_list[[paste0("Stim_vs_NS_", gsub("\\.", "_", clone_id))]] <-
-        paste(stim_group, "-", ns_group)
+      contrast_name <- paste0(
+        "Stim_vs_NS_",
+        format_metabolomics_contrast_label(clone_id)
+      )
+      add_contrast(
+        name = contrast_name,
+        expression = paste(stim_group, "-", ns_group),
+        case = paste(clone_id, "Stimulated"),
+        control = paste(clone_id, "Non_stimulated"),
+        comparison_type = "Within-clone stimulation effect",
+        stimulation_context = "Stimulated_vs_Non_stimulated"
+      )
     }
   }
 
@@ -251,23 +302,32 @@ build_metabolomics_contrasts <- function(metadata, design) {
     for (stim_state in stims) {
       stim_label <- ifelse(stim_state == "Non_stimulated", "NS", "Stim")
       for (pair in clone_pairs) {
-        group_1 <- make.names(paste(pair[1], stim_state, sep = "_"))
-        group_2 <- make.names(paste(pair[2], stim_state, sep = "_"))
+        ordered_pair <- orient_metabolomics_clone_pair(pair)
+        group_case <- make.names(paste(ordered_pair$case, stim_state, sep = "_"))
+        group_control <- make.names(paste(ordered_pair$control, stim_state, sep = "_"))
 
-        if (all(c(group_1, group_2) %in% colnames(design))) {
+        if (all(c(group_case, group_control) %in% colnames(design))) {
           tag <- paste0(
-            gsub("\\.", "_", pair[2]),
+            format_metabolomics_contrast_label(ordered_pair$case),
             "_vs_",
-            gsub("\\.", "_", pair[1]),
+            format_metabolomics_contrast_label(ordered_pair$control),
             "_",
             stim_label
           )
-          contrast_list[[tag]] <- paste(group_2, "-", group_1)
+          add_contrast(
+            name = tag,
+            expression = paste(group_case, "-", group_control),
+            case = paste(ordered_pair$case, stim_state),
+            control = paste(ordered_pair$control, stim_state),
+            comparison_type = "Between-clone phenotype effect",
+            stimulation_context = stim_state
+          )
         }
       }
     }
   }
 
+  attr(contrast_list, "contrast_info") <- dplyr::bind_rows(contrast_info)
   contrast_list
 }
 
@@ -328,6 +388,7 @@ run_metabolomics_dem_by_celltype <- function(celltype,
   rownames(design) <- metadata$SampleID
 
   contrast_list <- build_metabolomics_contrasts(metadata, design)
+  contrast_info <- attr(contrast_list, "contrast_info")
   if (length(contrast_list) == 0) {
     stop("No valid metabolomics contrasts could be built for: ", celltype)
   }
@@ -342,6 +403,8 @@ run_metabolomics_dem_by_celltype <- function(celltype,
       !grepl(output_exclude_pattern, export_contrasts, ignore.case = FALSE)
     ]
   }
+  contrast_info <- contrast_info %>%
+    dplyr::filter(.data$contrast %in% export_contrasts)
 
   metab_annot <- as.data.frame(
     metab_data[, .(Class, Name, Formula, `m/z`, Adduct, Polarity, Peak, `Qual.`)]
@@ -350,16 +413,48 @@ run_metabolomics_dem_by_celltype <- function(celltype,
 
   summary_df <- data.frame()
   for (contrast_name in export_contrasts) {
-    tt <- limma::topTable(fit2, coef = contrast_name, number = Inf) %>%
-      mutate(significant = ifelse(abs(logFC) >= lfc_cut & adj.P.Val <= padj_cut, TRUE, FALSE))
+    info <- contrast_info %>%
+      dplyr::filter(.data$contrast == contrast_name) %>%
+      dplyr::slice_head(n = 1)
 
-    final_table <- cbind(metab_annot[rownames(tt), ], tt)
+    tt <- limma::topTable(fit2, coef = contrast_name, number = Inf) %>%
+      mutate(
+        logFC = as.numeric(.data$logFC),
+        FC = dplyr::case_when(
+          .data$logFC > 0 ~ 2^.data$logFC,
+          .data$logFC < 0 ~ -2^abs(.data$logFC),
+          TRUE ~ 1
+        ),
+        significant = ifelse(abs(.data$logFC) >= lfc_cut & adj.P.Val <= padj_cut, TRUE, FALSE)
+      )
+
+    final_table <- cbind(metab_annot[rownames(tt), ], tt) %>%
+      dplyr::mutate(
+        contrast = contrast_name,
+        comparison_type = info$comparison_type,
+        stimulation_context = info$stimulation_context,
+        comparison_case = info$comparison_case,
+        comparison_control = info$comparison_control,
+        positive_logFC_higher_in = info$positive_logFC_higher_in,
+        negative_logFC_higher_in = info$negative_logFC_higher_in,
+        .before = "logFC"
+      ) %>%
+      dplyr::relocate("FC", .after = "logFC")
+
     openxlsx::write.xlsx(final_table, file.path(de_dir, paste0(contrast_name, ".xlsx")))
     write.table(final_table, file.path(de_dir, paste0(contrast_name, ".tsv")),
+                sep = "\t", row.names = FALSE)
+    write.table(final_table, file.path(de_dir, paste0(contrast_name, ".txt")),
                 sep = "\t", row.names = FALSE)
 
     summary_df <- rbind(summary_df, data.frame(
       file_name = contrast_name,
+      comparison_type = info$comparison_type,
+      stimulation_context = info$stimulation_context,
+      comparison_case = info$comparison_case,
+      comparison_control = info$comparison_control,
+      positive_logFC_higher_in = info$positive_logFC_higher_in,
+      negative_logFC_higher_in = info$negative_logFC_higher_in,
       nb_DEM_total = sum(tt$significant),
       nb_DEM_up = sum(tt$significant & tt$logFC > 0),
       nb_DEM_down = sum(tt$significant & tt$logFC < 0)
@@ -367,6 +462,10 @@ run_metabolomics_dem_by_celltype <- function(celltype,
   }
 
   openxlsx::write.xlsx(summary_df, file.path(de_dir, "Summary_Table.xlsx"))
+  write.table(summary_df, file.path(de_dir, "Summary_Table.tsv"),
+              sep = "\t", row.names = FALSE)
+  write.table(summary_df, file.path(de_dir, "Summary_Table.txt"),
+              sep = "\t", row.names = FALSE)
 
   if (isTRUE(make_volcano)) {
     run_metabolomics_volcano_plots(

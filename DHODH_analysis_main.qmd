@@ -578,6 +578,7 @@ res_metabo_ips <- run_metabolomics_dem_by_celltype(
   raw_data_file = METABOLOMIC_IPS_ANALYSIS$raw_data_file,
   out_dir = METABOLOMIC_IPS_ANALYSIS$out_dir,
   target_clones = METABOLOMIC_IPS_ANALYSIS$target_clones,
+  output_exclude_pattern = METABOLOMIC_IPS_ANALYSIS$output_exclude_pattern,
   outliers = METABOLOMIC_IPS_ANALYSIS$outliers,
   qual_cut = METABOLOMIC_IPS_ANALYSIS$qual_cut,
   lfc_cut = METABOLOMIC_IPS_ANALYSIS$lfc_cut,
@@ -679,5 +680,41 @@ ips_ct_cc_ora <- run_multiomics_cluster_reactome(
   annot_tbl = ips_ct_cc_cluster$table,
   out_dir = MULTIOMICS_CLUSTERING_IPS$out_dir,
   output_prefix = MULTIOMICS_CLUSTERING_IPS$output_prefix
+)
+```
+
+# Public data comparison control
+
+
+## RNA-seq CCC/CTRL
+
+```{r}
+public_rnaseq_ccc_ctrl <- run_public_expression_exploration(
+  PUBLIC_RNASEQ_CCC_CTRL_ANALYSIS
+)
+```
+
+## RNA-seq all phenotypes
+
+```{r}
+public_rnaseq_all_phenotypes <- run_public_expression_exploration(
+  PUBLIC_RNASEQ_ALL_PHENOTYPES_ANALYSIS
+)
+```
+
+## Microarray CCC/CTRL
+
+```{r}
+public_microarray_ccc_ctrl <- run_public_expression_exploration(
+  PUBLIC_MICROARRAY_CCC_CTRL_ANALYSIS
+)
+```
+
+## Microarray all phenotypes
+
+```{r}
+# DCM will be included automatically here when matching microarray files are added.
+public_microarray_all_phenotypes <- run_public_expression_exploration(
+  PUBLIC_MICROARRAY_ALL_PHENOTYPES_ANALYSIS
 )
 ```

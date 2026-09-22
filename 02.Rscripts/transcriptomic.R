@@ -228,6 +228,539 @@ add_gene_annotations <- function(tbl, species = c("human","rat","mouse")) {
     dplyr::relocate(ENSEMBL_ID, Gene_name, .before = 1)
 }
 
+
+# ------------------------------------------------------------
+# Public heart-tissue immune-axis expression exploration
+# ------------------------------------------------------------
+#
+# These helpers generate public-data expression and gene-gene correlation
+# heatmaps for the IFN-gamma/CXCR3 chemokine axis plus broad immune-cell
+# markers. RNA-seq count tables are normalized with DESeq2 size factors.
+# Agilent microarray Feature Extraction files are read from gProcessedSignal,
+# log2-transformed, quantile-normalized with limma, and collapsed to gene
+# symbols before plotting.
+
+public_group_levels <- function() c("CCC", "Control", "DCM")
+
+public_group_colors <- function() {
+  c(
+    "CCC" = "#B2182B",
+    "Control" = "#2166AC",
+    "DCM" = "#4DAF4A"
+  )
+}
+
+infer_public_group <- function(sample) {
+  dplyr::case_when(
+    stringr::str_detect(sample, "^sevCCC|_CCC_") ~ "CCC",
+    stringr::str_detect(sample, "^CTRL|_CTL_") ~ "Control",
+    stringr::str_detect(sample, "^DCM|_DCM_") ~ "DCM",
+    TRUE ~ "Other"
+  )
+}
+
+public_row_center_scale <- function(mat) {
+  scaled <- t(apply(mat, 1, function(x) {
+    if (all(is.na(x))) return(rep(NA_real_, length(x)))
+
+    x_sd <- stats::sd(x, na.rm = TRUE)
+    if (!is.finite(x_sd) || x_sd == 0) {
+      return(rep(0, length(x)))
+    }
+
+    (x - mean(x, na.rm = TRUE)) / x_sd
+  }))
+  dimnames(scaled) <- dimnames(mat)
+  scaled
+}
+
+select_public_ensembl_rows_by_symbol <- function(mat,
+                                                 target_genes,
+                                                 species = c("human", "rat", "mouse")) {
+  species <- match.arg(species)
+  pkg <- switch(species,
+    human = "org.Hs.eg.db",
+    rat   = "org.Rn.eg.db",
+    mouse = "org.Mm.eg.db"
+  )
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    stop("Missing annotation package: ", pkg,
+         ". Install it before running public expression plots.",
+         call. = FALSE)
+  }
+
+  db <- get(paste0(pkg), envir = asNamespace(pkg))
+  ens <- sub("\\..*$", "", rownames(mat))
+  sym <- suppressMessages(
+    AnnotationDbi::mapIds(
+      db,
+      keys = ens,
+      keytype = "ENSEMBL",
+      column = "SYMBOL",
+      multiVals = "first"
+    )
+  )
+
+  annot <- tibble::tibble(
+    feature_id = rownames(mat),
+    Gene_name = unname(sym[ens]),
+    target_order = match(toupper(unname(sym[ens])), toupper(target_genes)),
+    mean_expression = rowMeans(mat, na.rm = TRUE)
+  ) |>
+    dplyr::filter(!is.na(.data$target_order)) |>
+    dplyr::arrange(.data$target_order, dplyr::desc(.data$mean_expression)) |>
+    dplyr::distinct(.data$Gene_name, .keep_all = TRUE)
+
+  target_mat <- matrix(
+    NA_real_,
+    nrow = length(target_genes),
+    ncol = ncol(mat),
+    dimnames = list(target_genes, colnames(mat))
+  )
+
+  if (nrow(annot) > 0) {
+    target_mat[annot$Gene_name, ] <- mat[annot$feature_id, , drop = FALSE]
+  }
+
+  missing_genes <- setdiff(target_genes, annot$Gene_name)
+  if (length(missing_genes) > 0) {
+    message("Public expression table is missing target gene(s): ",
+            paste(missing_genes, collapse = ", "))
+  }
+
+  target_mat
+}
+
+read_public_rnaseq_normalized_matrix <- function(input_path,
+                                                 target_genes,
+                                                 species = "human",
+                                                 pseudo_count = 1) {
+  if (!file.exists(input_path)) {
+    stop("Public normalized RNA-seq file does not exist: ", input_path,
+         call. = FALSE)
+  }
+
+  sample_cols <- strsplit(readLines(input_path, n = 1), "\t", fixed = TRUE)[[1]]
+  sample_cols <- stringr::str_replace_all(sample_cols, '^"|"$', "")
+
+  expr_tbl <- data.table::fread(
+    input_path,
+    skip = 1,
+    header = FALSE,
+    col.names = c("Geneid", sample_cols)
+  )
+
+  metadata <- tibble::tibble(
+    sample = sample_cols,
+    sample_label = sample_cols,
+    group = infer_public_group(.data$sample),
+    sample_no = readr::parse_number(.data$sample)
+  ) |>
+    dplyr::mutate(group = factor(.data$group, levels = c(public_group_levels(), "Other"))) |>
+    dplyr::arrange(.data$group, .data$sample_no)
+
+  expr_mat <- expr_tbl |>
+    dplyr::select("Geneid", dplyr::all_of(metadata$sample)) |>
+    tibble::column_to_rownames("Geneid") |>
+    as.matrix()
+  storage.mode(expr_mat) <- "double"
+  expr_mat <- log2(expr_mat + pseudo_count)
+
+  list(
+    expression = select_public_ensembl_rows_by_symbol(expr_mat, target_genes, species),
+    metadata = metadata
+  )
+}
+
+read_public_rnaseq_count_matrix <- function(input_path,
+                                            target_genes,
+                                            species = "human",
+                                            pseudo_count = 1) {
+  if (!file.exists(input_path)) {
+    stop("Public RNA-seq count file does not exist: ", input_path,
+         call. = FALSE)
+  }
+
+  count_tbl <- readr::read_tsv(input_path, show_col_types = FALSE)
+  if (!"Geneid" %in% colnames(count_tbl)) {
+    stop("Public RNA-seq count table must contain a Geneid column: ",
+         input_path, call. = FALSE)
+  }
+
+  sample_cols <- setdiff(colnames(count_tbl), "Geneid")
+  metadata <- tibble::tibble(
+    sample = sample_cols,
+    sample_label = sample_cols,
+    group = infer_public_group(.data$sample),
+    sample_no = readr::parse_number(.data$sample)
+  ) |>
+    dplyr::mutate(group = factor(.data$group, levels = c(public_group_levels(), "Other"))) |>
+    dplyr::arrange(.data$group, .data$sample_no)
+
+  count_mat <- count_tbl |>
+    dplyr::select("Geneid", dplyr::all_of(metadata$sample)) |>
+    tibble::column_to_rownames("Geneid") |>
+    as.matrix()
+  storage.mode(count_mat) <- "double"
+
+  dds <- DESeq2::DESeqDataSetFromMatrix(
+    countData = round(count_mat),
+    colData = metadata |> tibble::column_to_rownames("sample"),
+    design = ~ 1
+  )
+  dds <- DESeq2::estimateSizeFactors(dds)
+  expr_mat <- log2(DESeq2::counts(dds, normalized = TRUE) + pseudo_count)
+
+  list(
+    expression = select_public_ensembl_rows_by_symbol(expr_mat, target_genes, species),
+    metadata = metadata
+  )
+}
+
+parse_public_microarray_sample <- function(path) {
+  stem <- basename(path) |>
+    stringr::str_remove("\\.txt\\.gz$") |>
+    stringr::str_remove("\\.txt$")
+  parts <- strsplit(stem, "_", fixed = TRUE)[[1]]
+  group_raw <- parts[3]
+
+  tibble::tibble(
+    sample = stem,
+    sample_label = if (length(parts) >= 2) parts[2] else stem,
+    group = dplyr::case_when(
+      group_raw == "CCC" ~ "CCC",
+      group_raw == "CTL" ~ "Control",
+      group_raw == "DCM" ~ "DCM",
+      TRUE ~ "Other"
+    ),
+    gsm = parts[1],
+    raw_file = path
+  )
+}
+
+read_public_agilent_feature_table <- function(path) {
+  feature_tbl <- data.table::fread(
+    path,
+    skip = "FEATURES",
+    select = c(
+      "FEATURES", "ControlType", "GeneName", "SystematicName",
+      "gProcessedSignal", "gIsFound"
+    )
+  )
+  colnames(feature_tbl)[1] <- "RowType"
+
+  feature_tbl |>
+    dplyr::filter(
+      .data$RowType == "DATA",
+      .data$ControlType == 0,
+      !is.na(.data$GeneName),
+      .data$GeneName != "",
+      is.finite(.data$gProcessedSignal)
+    ) |>
+    dplyr::mutate(
+      Gene_name = stringr::str_trim(.data$GeneName),
+      signal = pmax(as.numeric(.data$gProcessedSignal), 1)
+    ) |>
+    dplyr::group_by(.data$Gene_name) |>
+    dplyr::summarise(signal = stats::median(.data$signal, na.rm = TRUE), .groups = "drop")
+}
+
+read_public_microarray_matrix <- function(input_dir,
+                                          target_genes,
+                                          groups_keep = public_group_levels()) {
+  if (!dir.exists(input_dir)) {
+    stop("Public microarray directory does not exist: ", input_dir,
+         call. = FALSE)
+  }
+
+  files <- list.files(input_dir, pattern = "\\.txt(\\.gz)?$", full.names = TRUE)
+  if (length(files) == 0) {
+    stop("No Agilent microarray text files found in: ", input_dir,
+         call. = FALSE)
+  }
+
+  metadata <- purrr::map_dfr(files, parse_public_microarray_sample) |>
+    dplyr::mutate(group = factor(.data$group, levels = c(public_group_levels(), "Other"))) |>
+    dplyr::filter(.data$group %in% groups_keep) |>
+    dplyr::arrange(.data$group, .data$sample_label) |>
+    dplyr::mutate(sample_no = dplyr::row_number())
+
+  if (nrow(metadata) == 0) {
+    stop("No public microarray samples remained after group filtering.",
+         call. = FALSE)
+  }
+
+  sample_vectors <- purrr::map(metadata$raw_file, read_public_agilent_feature_table)
+  gene_universe <- Reduce(intersect, purrr::map(sample_vectors, ~ .x$Gene_name))
+  if (length(gene_universe) == 0) {
+    stop("No common microarray gene symbols across selected samples.",
+         call. = FALSE)
+  }
+
+  signal_list <- purrr::map2(sample_vectors, metadata$sample, function(tbl, sample_id) {
+    tbl |>
+      dplyr::filter(.data$Gene_name %in% gene_universe) |>
+      dplyr::arrange(.data$Gene_name) |>
+      dplyr::pull(.data$signal)
+  })
+  signal_mat <- do.call(cbind, signal_list)
+
+  rownames(signal_mat) <- sort(gene_universe)
+  colnames(signal_mat) <- metadata$sample
+  log_mat <- log2(signal_mat)
+  norm_mat <- limma::normalizeBetweenArrays(log_mat, method = "quantile")
+
+  target_mat <- matrix(
+    NA_real_,
+    nrow = length(target_genes),
+    ncol = ncol(norm_mat),
+    dimnames = list(target_genes, colnames(norm_mat))
+  )
+  present <- intersect(target_genes, rownames(norm_mat))
+  if (length(present) > 0) {
+    target_mat[present, ] <- norm_mat[present, , drop = FALSE]
+  }
+
+  missing_genes <- setdiff(target_genes, present)
+  if (length(missing_genes) > 0) {
+    message("Public microarray data is missing target gene(s): ",
+            paste(missing_genes, collapse = ", "))
+  }
+
+  list(expression = target_mat, metadata = metadata)
+}
+
+filter_public_expression_groups <- function(expr_mat,
+                                            metadata,
+                                            groups_keep = public_group_levels()) {
+  if (!"sample_no" %in% colnames(metadata)) {
+    metadata$sample_no <- seq_len(nrow(metadata))
+  }
+
+  metadata <- metadata |>
+    dplyr::filter(
+      .data$sample %in% colnames(expr_mat),
+      .data$group %in% groups_keep
+    ) |>
+    dplyr::mutate(group = factor(as.character(.data$group), levels = public_group_levels())) |>
+    dplyr::arrange(.data$group, .data$sample_no, .data$sample_label)
+
+  available_groups <- unique(as.character(metadata$group))
+  missing_groups <- setdiff(groups_keep, available_groups)
+  if (length(missing_groups) > 0) {
+    message("No public samples available for group(s): ",
+            paste(missing_groups, collapse = ", "))
+  }
+
+  list(
+    expression = expr_mat[, metadata$sample, drop = FALSE],
+    metadata = metadata
+  )
+}
+
+plot_public_expression_heatmap <- function(expr_mat,
+                                           metadata,
+                                           out_dir,
+                                           output_prefix,
+                                           dataset_label,
+                                           target_genes = rownames(expr_mat),
+                                           width = 9.2,
+                                           height = 6.2,
+                                           dpi = 300) {
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+  expr_mat <- expr_mat[target_genes, metadata$sample, drop = FALSE]
+  width <- max(width, 0.38 * ncol(expr_mat) + 2.8)
+  scaled_mat <- public_row_center_scale(expr_mat)
+  scaled_mat <- pmax(pmin(scaled_mat, 2), -2)
+
+  heatmap_colors <- if (exists("CLUSTERING_PLOT_SETTINGS") &&
+                        !is.null(CLUSTERING_PLOT_SETTINGS$heatmap_colors)) {
+    CLUSTERING_PLOT_SETTINGS$heatmap_colors
+  } else {
+    c("#00265E", "#5E7F9D", "white", "#A85B61", "#67001E")
+  }
+
+  annot_colors <- public_group_colors()
+  annot_colors <- annot_colors[intersect(names(annot_colors), levels(droplevels(metadata$group)))]
+
+  top_annot <- ComplexHeatmap::HeatmapAnnotation(
+    Phenotype = metadata$group,
+    col = list(Phenotype = annot_colors),
+    annotation_name_gp = grid::gpar(fontsize = 9, fontface = "bold"),
+    simple_anno_size = grid::unit(4, "mm")
+  )
+
+  output_file <- file.path(out_dir, paste0(output_prefix, "_expression_heatmap.png"))
+  grDevices::png(output_file, width = width, height = height, units = "in", res = dpi)
+  on.exit(grDevices::dev.off(), add = TRUE)
+
+  ht <- ComplexHeatmap::Heatmap(
+    scaled_mat,
+    name = "Row z-score",
+    col = circlize::colorRamp2(c(-2, -1, 0, 1, 2), heatmap_colors),
+    na_col = "grey90",
+    top_annotation = top_annot,
+    column_split = metadata$group,
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    cluster_column_slices = FALSE,
+    show_column_dend = FALSE,
+    show_row_dend = FALSE,
+    column_labels = metadata$sample_label,
+    column_names_rot = 45,
+    column_names_gp = grid::gpar(fontsize = 8),
+    row_names_gp = grid::gpar(fontsize = 10, fontface = "bold"),
+    column_title_gp = grid::gpar(fontsize = 10, fontface = "bold"),
+    heatmap_legend_param = list(
+      title = "Row z-score",
+      at = c(-2, -1, 0, 1, 2)
+    )
+  )
+
+  ComplexHeatmap::draw(
+    ht,
+    column_title = dataset_label,
+    column_title_gp = grid::gpar(fontsize = 13, fontface = "bold"),
+    heatmap_legend_side = "right",
+    annotation_legend_side = "right",
+    padding = grid::unit(c(10, 10, 10, 10), "mm")
+  )
+
+  invisible(list(heatmap = ht, file = output_file, matrix = scaled_mat))
+}
+
+plot_public_correlation_heatmaps <- function(expr_mat,
+                                             metadata,
+                                             out_dir,
+                                             output_prefix,
+                                             dataset_label,
+                                             target_genes = rownames(expr_mat),
+                                             width = 9.5,
+                                             height = 5.4,
+                                             dpi = 300) {
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+  expr_mat <- expr_mat[target_genes, metadata$sample, drop = FALSE]
+  groups_present <- levels(droplevels(metadata$group))
+
+  corr_df <- purrr::map_dfr(groups_present, function(group_name) {
+    group_samples <- metadata$sample[metadata$group == group_name]
+    group_mat <- expr_mat[, group_samples, drop = FALSE]
+    corr_mat <- suppressWarnings(
+      stats::cor(t(group_mat), use = "pairwise.complete.obs", method = "pearson")
+    )
+    diag(corr_mat) <- 1
+
+    as.data.frame(as.table(corr_mat), stringsAsFactors = FALSE) |>
+      tibble::as_tibble() |>
+      dplyr::rename(gene_y = "Var1", gene_x = "Var2", correlation = "Freq") |>
+      dplyr::mutate(group = group_name)
+  })
+
+  corr_df <- corr_df |>
+    dplyr::mutate(
+      gene_y = factor(.data$gene_y, levels = rev(target_genes)),
+      gene_x = factor(.data$gene_x, levels = target_genes),
+      group = factor(.data$group, levels = public_group_levels())
+    )
+
+  p <- ggplot2::ggplot(
+    corr_df,
+    ggplot2::aes(x = .data$gene_x, y = .data$gene_y, fill = .data$correlation)
+  ) +
+    ggplot2::geom_tile(color = "white", linewidth = 0.25) +
+    ggplot2::scale_fill_gradientn(
+      colors = c("#2166AC", "white", "#B2182B"),
+      limits = c(-1, 1),
+      na.value = "grey90",
+      name = "Pearson r"
+    ) +
+    ggplot2::facet_wrap(~group, nrow = 1) +
+    ggplot2::coord_equal() +
+    ggplot2::labs(
+      title = paste0(dataset_label, " gene-gene correlations"),
+      x = NULL,
+      y = NULL
+    ) +
+    ggplot2::theme_minimal(base_size = 10) +
+    ggplot2::theme(
+      panel.grid = ggplot2::element_blank(),
+      axis.text.x = ggplot2::element_text(angle = 45, hjust = 1),
+      axis.text.y = ggplot2::element_text(face = "bold"),
+      plot.title = ggplot2::element_text(face = "bold", hjust = 0.5),
+      plot.subtitle = ggplot2::element_text(hjust = 0.5),
+      strip.text = ggplot2::element_text(face = "bold")
+    )
+
+  output_file <- file.path(out_dir, paste0(output_prefix, "_correlation_heatmaps.png"))
+  ggplot2::ggsave(output_file, p, width = width, height = height, dpi = dpi)
+
+  invisible(list(plot = p, file = output_file, plot_data = corr_df))
+}
+
+read_public_expression_analysis <- function(analysis) {
+  input_type <- analysis$input_type
+  if (identical(input_type, "rnaseq_normalized")) {
+    read_public_rnaseq_normalized_matrix(
+      input_path = analysis$input_path,
+      target_genes = analysis$target_genes
+    )
+  } else if (identical(input_type, "rnaseq_counts")) {
+    read_public_rnaseq_count_matrix(
+      input_path = analysis$input_path,
+      target_genes = analysis$target_genes
+    )
+  } else if (identical(input_type, "microarray_agilent")) {
+    read_public_microarray_matrix(
+      input_dir = analysis$input_path,
+      target_genes = analysis$target_genes,
+      groups_keep = analysis$groups_keep
+    )
+  } else {
+    stop("Unsupported public expression input_type: ", input_type,
+         call. = FALSE)
+  }
+}
+
+run_public_expression_exploration <- function(analysis) {
+  public_expr <- read_public_expression_analysis(analysis)
+  filtered <- filter_public_expression_groups(
+    expr_mat = public_expr$expression,
+    metadata = public_expr$metadata,
+    groups_keep = analysis$groups_keep
+  )
+
+  expression <- plot_public_expression_heatmap(
+    expr_mat = filtered$expression,
+    metadata = filtered$metadata,
+    out_dir = analysis$out_dir,
+    output_prefix = analysis$output_prefix,
+    dataset_label = analysis$dataset_label,
+    target_genes = analysis$target_genes
+  )
+
+  correlations <- plot_public_correlation_heatmaps(
+    expr_mat = filtered$expression,
+    metadata = filtered$metadata,
+    out_dir = analysis$out_dir,
+    output_prefix = analysis$output_prefix,
+    dataset_label = analysis$dataset_label,
+    target_genes = analysis$target_genes
+  )
+
+  readr::write_tsv(
+    filtered$metadata,
+    file.path(analysis$out_dir, paste0(analysis$output_prefix, "_sample_metadata.tsv"))
+  )
+
+  invisible(list(
+    expression = expression,
+    correlations = correlations,
+    metadata = filtered$metadata
+  ))
+}
+
 # Select top labels for optional volcano/MA-style annotations.
 pick_top_labels <- function(tbl_plot, n = 10, y_col = c("padj","pvalue"),
                             by = c("p", "both_dir"), fc_col = "log2FoldChange") {
@@ -261,229 +794,6 @@ pick_top_labels <- function(tbl_plot, n = 10, y_col = c("padj","pvalue"),
 
 # Small infix helper to coalesce vector-like values.
 `%||%` <- function(a, b) ifelse(is.na(a) | a=="", b, a)
-
-
-# ------------------------------------------------------------
-# SoM module score plotting
-# ------------------------------------------------------------
-
-plot_old_som_plot <- function(qc_dataset,
-                              som_modules,
-                              exercise_group,
-                              reference_group = "Controls",
-                              sex = "all",
-                              baseline_timepoint = "pre_exercise",
-                              sample_id_col = "vialLabel",
-                              timepoint_labels,
-                              group_colors,
-                              output_dir = NULL,
-                              file_prefix = "old_som_module_delta",
-                              width = 6,
-                              height = 4.5,
-                              dpi = 600,
-                              alpha = 0.05) {
-  if (length(exercise_group) != 1) {
-    out <- lapply(exercise_group, function(group_i) {
-      plot_old_som_plot(
-        qc_dataset = qc_dataset,
-        som_modules = som_modules,
-        exercise_group = group_i,
-        reference_group = reference_group,
-        sex = sex,
-        baseline_timepoint = baseline_timepoint,
-        sample_id_col = sample_id_col,
-        timepoint_labels = timepoint_labels,
-        group_colors = group_colors,
-        output_dir = output_dir,
-        file_prefix = file_prefix,
-        width = width,
-        height = height,
-        dpi = dpi,
-        alpha = alpha
-      )
-    })
-    names(out) <- exercise_group
-    return(out)
-  }
-
-  mat <- qc_dataset$tables$normalized_expression
-  feat <- qc_dataset$tables$feature_annotation
-  meta <- qc_dataset$tables$metadata
-
-  required_meta_cols <- c(sample_id_col, "pid", "Timepoint", "Sex")
-  missing_meta_cols <- setdiff(required_meta_cols, colnames(meta))
-  if (length(missing_meta_cols) > 0) {
-    stop("Missing metadata column(s): ", paste(missing_meta_cols, collapse = ", "), call. = FALSE)
-  }
-  if (!any(c("Group", "randomGroupCode") %in% colnames(meta))) {
-    stop("Metadata must contain `Group` or `randomGroupCode`.", call. = FALSE)
-  }
-  if (!all(c("feature_id", "SYMBOL") %in% colnames(feat))) {
-    stop("Feature annotation must contain `feature_id` and `SYMBOL`.", call. = FALSE)
-  }
-
-  normalize_group <- function(x) {
-    dplyr::case_when(
-      x %in% c("ADUControl", "Control", "Controls", "Resting") ~ "Control",
-      x %in% c("ADUEndur", "Endurance") ~ "Endurance",
-      x %in% c("ADUResist", "Resistance") ~ "Resistance",
-      TRUE ~ x
-    )
-  }
-
-  exercise_group <- normalize_group(exercise_group)
-  reference_group <- normalize_group(reference_group)
-  if (!reference_group %in% "Control") {
-    stop("The legacy plot expects the reference group to be Control/Controls/Resting.", call. = FALSE)
-  }
-
-  get_color <- function(possible_names) {
-    hit <- possible_names[possible_names %in% names(group_colors)][1]
-    if (is.na(hit)) {
-      stop("Missing color for one of: ", paste(possible_names, collapse = ", "), call. = FALSE)
-    }
-    unname(group_colors[[hit]])
-  }
-
-  colors <- c(
-    Resting = get_color(c("Resting", "Control", "Controls", "ADUControl")),
-    stats::setNames(get_color(c(exercise_group)), exercise_group)
-  )
-
-  feat2 <- feat |>
-    dplyr::filter(!is.na(.data$SYMBOL), .data$feature_id %in% rownames(mat)) |>
-    dplyr::mutate(mean_expr = rowMeans(mat[.data$feature_id, , drop = FALSE])) |>
-    dplyr::arrange(.data$SYMBOL, dplyr::desc(.data$mean_expr)) |>
-    dplyr::distinct(.data$SYMBOL, .keep_all = TRUE)
-
-  sym2fid <- stats::setNames(feat2$feature_id, feat2$SYMBOL)
-
-  module_df <- lapply(names(som_modules), function(module_name) {
-    fids <- unname(sym2fid[som_modules[[module_name]]])
-    fids <- fids[!is.na(fids) & fids %in% rownames(mat)]
-    if (length(fids) == 0) {
-      warning("No matched genes for module: ", module_name, call. = FALSE)
-      return(NULL)
-    }
-
-    tibble::tibble(
-      vialLabel = as.character(colnames(mat)),
-      module = module_name,
-      score = exp(colMeans(mat[fids, , drop = FALSE]))
-    )
-  }) |>
-    dplyr::bind_rows()
-
-  raw_group <- if ("Group" %in% colnames(meta)) {
-    as.character(meta$Group)
-  } else {
-    as.character(meta$randomGroupCode)
-  }
-  if ("randomGroupCode" %in% colnames(meta)) {
-    raw_group <- dplyr::coalesce(as.character(meta$randomGroupCode), raw_group)
-  }
-
-  meta_clean <- meta |>
-    dplyr::mutate(
-      vialLabel = as.character(.data[[sample_id_col]]),
-      pid = as.character(.data$pid),
-      Sex = as.character(.data$Sex),
-      Timepoint = as.character(.data$Timepoint),
-      Group = normalize_group(raw_group)
-    ) |>
-    dplyr::select("vialLabel", "pid", "Sex", "Timepoint", "Group")
-
-  if (!identical(sex, "all")) {
-    meta_clean <- meta_clean |> dplyr::filter(.data$Sex %in% sex)
-  }
-
-  dm_delta <- module_df |>
-    dplyr::left_join(meta_clean, by = "vialLabel") |>
-    dplyr::filter(!is.na(.data$Timepoint), .data$Group %in% c("Control", exercise_group)) |>
-    dplyr::mutate(y = log(.data$score)) |>
-    dplyr::group_by(.data$pid, .data$Group, .data$module) |>
-    dplyr::mutate(
-      base_y = .data$y[.data$Timepoint == baseline_timepoint][1],
-      delta = .data$y - .data$base_y
-    ) |>
-    dplyr::ungroup() |>
-    dplyr::filter(!is.na(.data$delta)) |>
-    dplyr::mutate(
-      Group = dplyr::if_else(.data$Group == "Control", "Resting", .data$Group),
-      Timepoint = factor(.data$Timepoint, levels = names(timepoint_labels))
-    )
-
-  sig <- dm_delta |>
-    dplyr::filter(.data$Group %in% c("Resting", exercise_group), .data$Timepoint != baseline_timepoint) |>
-    dplyr::group_by(.data$module, .data$Timepoint) |>
-    dplyr::summarise(
-      p = tryCatch(stats::t.test(delta ~ Group)$p.value, error = function(e) NA_real_),
-      .groups = "drop"
-    ) |>
-    dplyr::mutate(
-      p_adj = stats::p.adjust(.data$p, method = "BH"),
-      is_sig = !is.na(.data$p_adj) & .data$p_adj < alpha
-    )
-
-  sum_df <- dm_delta |>
-    dplyr::filter(.data$Group %in% c("Resting", exercise_group)) |>
-    dplyr::group_by(.data$module, .data$Timepoint, .data$Group) |>
-    dplyr::summarise(
-      mean_delta = mean(.data$delta),
-      se = stats::sd(.data$delta) / sqrt(dplyr::n()),
-      .groups = "drop"
-    ) |>
-    dplyr::left_join(sig, by = c("module", "Timepoint")) |>
-    dplyr::mutate(is_sig = ifelse(.data$Group == exercise_group, dplyr::coalesce(.data$is_sig, FALSE), FALSE))
-
-  p <- ggplot2::ggplot(sum_df, ggplot2::aes(.data$Timepoint, .data$mean_delta, group = .data$Group, color = .data$Group)) +
-    ggplot2::geom_line(linewidth = 1.1) +
-    ggplot2::geom_errorbar(
-      ggplot2::aes(ymin = .data$mean_delta - .data$se, ymax = .data$mean_delta + .data$se),
-      width = 0.15
-    ) +
-    ggplot2::geom_point(
-      ggplot2::aes(fill = ifelse(.data$is_sig, as.character(.data$Group), "white"), size = .data$is_sig),
-      shape = 21,
-      stroke = 1
-    ) +
-    ggplot2::scale_x_discrete(labels = timepoint_labels) +
-    ggplot2::scale_color_manual(values = colors) +
-    ggplot2::scale_fill_manual(values = c(colors, "white" = "white"), guide = "none") +
-    ggplot2::scale_size_manual(values = c("FALSE" = 2, "TRUE" = 3.5), guide = "none") +
-    ggplot2::facet_wrap(~module, ncol = 2, scales = "free_y") +
-    ggplot2::theme_classic() +
-    ggplot2::theme(
-      axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, size = 11),
-      axis.text.y = ggplot2::element_text(size = 12),
-      axis.title = ggplot2::element_text(size = 14, face = "bold"),
-      strip.text = ggplot2::element_text(size = 12, face = "bold"),
-      plot.title = ggplot2::element_text(size = 12, hjust = 0.5)
-    ) +
-    ggplot2::labs(
-      y = expression(Delta * " log(module score)"),
-      title = paste0("\u0394 Module Scores: ", exercise_group, " vs Resting"),
-      x = NULL
-    )
-
-  plot_file <- NULL
-  if (!is.null(output_dir)) {
-    dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
-    sex_label <- if (identical(sex, "all")) "all_samples" else paste(sex, collapse = "_")
-    file_stem <- paste(file_prefix, exercise_group, "vs_Resting", sex_label, sep = "__")
-    file_stem <- gsub("[^A-Za-z0-9_\\-]+", "_", file_stem)
-    plot_file <- file.path(output_dir, paste0(file_stem, ".png"))
-    ggplot2::ggsave(plot_file, p, width = width, height = height, dpi = dpi)
-  }
-
-  list(
-    delta = dm_delta,
-    summary = sum_df,
-    tests = sig,
-    plot = p,
-    plot_file = plot_file
-  )
-}
 
 
 # ------------------------------------------------------------

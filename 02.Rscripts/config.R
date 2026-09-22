@@ -16,6 +16,9 @@
 PATH.TRANSCRIPTOMOC_RAW_DATA <- '01.Data/01.Transcriptomic/Raw_counts.tab'
 PATH.TRANSCRIPTOMIC_RAW_DATA <- PATH.TRANSCRIPTOMOC_RAW_DATA
 PATH.TRANSCRIPTOMIC_SAMPLE_METADATA <- '01.Data/01.Transcriptomic/samples.tsv'
+PATH.PUBLIC_RNASEQ_COUNTS <- "01.Data/04.Public_data/01.RNAseq/GSE191081_Count_table.txt"
+PATH.PUBLIC_RNASEQ_NORMALIZED <- "01.Data/04.Public_data/01.RNAseq/RNA_seq_norm_data.txt"
+PATH.PUBLIC_MICROARRAY_DIR <- "01.Data/04.Public_data/02.Microarray"
 PATH.MITOCARTA_DB <- "01.Data/mitocarta.xlsx"
 
 # Metabolomics raw table
@@ -36,6 +39,9 @@ PATH.AC16_results <- '03.Results/01.AC16/'
 
 # IPS
 PATH.IPS_results <- '03.Results/02.IPS/'
+
+# Public data
+PATH.PUBLIC_results <- "03.Results/03.Public_data/"
 
 
 # ------------------------------------------------------------
@@ -497,6 +503,63 @@ TRANSCRIPTOMIC_IPS_GLYCO_MITO_VOLCANO <- list(
   padj_col = "padj",
   lfc_cut = 1.5,
   padj_cut = 0.05
+)
+
+
+# ------------------------------------------------------------
+# Public data: heart-tissue immune-axis expression settings
+# ------------------------------------------------------------
+
+PUBLIC_IMMUNE_AXIS_GENES <- c(
+  "IFNG",
+  "CXCR3",
+  "CXCL9",
+  "CXCL10",
+  "CXCL11",
+  "TBX21",
+  "CD3D",
+  "CD3E",
+  "CD3G"
+)
+
+PUBLIC_RNASEQ_CCC_CTRL_ANALYSIS <- list(
+  input_type = "rnaseq_normalized",
+  input_path = PATH.PUBLIC_RNASEQ_NORMALIZED,
+  out_dir = file.path(PATH.PUBLIC_results, "01.RNAseq_CCC_CTRL"),
+  output_prefix = "public_rnaseq_CCC_CTRL_immune_axis",
+  dataset_label = "Public RNA-seq heart tissue CCC vs Control",
+  target_genes = PUBLIC_IMMUNE_AXIS_GENES,
+  groups_keep = c("CCC", "Control")
+)
+
+PUBLIC_RNASEQ_ALL_PHENOTYPES_ANALYSIS <- list(
+  input_type = "rnaseq_counts",
+  input_path = PATH.PUBLIC_RNASEQ_COUNTS,
+  out_dir = file.path(PATH.PUBLIC_results, "02.RNAseq_all_phenotypes"),
+  output_prefix = "public_rnaseq_all_phenotypes_immune_axis",
+  dataset_label = "Public RNA-seq heart tissue all phenotypes",
+  target_genes = PUBLIC_IMMUNE_AXIS_GENES,
+  groups_keep = c("CCC", "Control", "DCM")
+)
+
+PUBLIC_MICROARRAY_CCC_CTRL_ANALYSIS <- list(
+  input_type = "microarray_agilent",
+  input_path = PATH.PUBLIC_MICROARRAY_DIR,
+  out_dir = file.path(PATH.PUBLIC_results, "03.Microarray_CCC_CTRL"),
+  output_prefix = "public_microarray_CCC_CTRL_immune_axis",
+  dataset_label = "Public microarray heart tissue CCC vs Control",
+  target_genes = PUBLIC_IMMUNE_AXIS_GENES,
+  groups_keep = c("CCC", "Control")
+)
+
+PUBLIC_MICROARRAY_ALL_PHENOTYPES_ANALYSIS <- list(
+  input_type = "microarray_agilent",
+  input_path = PATH.PUBLIC_MICROARRAY_DIR,
+  out_dir = file.path(PATH.PUBLIC_results, "04.Microarray_all_phenotypes"),
+  output_prefix = "public_microarray_all_phenotypes_immune_axis",
+  dataset_label = "Public microarray heart tissue all available phenotypes",
+  target_genes = PUBLIC_IMMUNE_AXIS_GENES,
+  groups_keep = c("CCC", "Control", "DCM")
 )
 
 
